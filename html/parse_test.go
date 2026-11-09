@@ -523,3 +523,20 @@ func TestIssue70179(t *testing.T) {
 		t.Fatalf("unexpected failure: %v", err)
 	}
 }
+
+func TestDuplicateAttrSelfClosingForeignContent(t *testing.T) {
+	// A dropped duplicate attribute whose unquoted value ends in a solidus must
+	// not make a foreign element self-closing, which would move the following
+	// text out of it (see CVE-2025-22872).
+	doc, err := Parse(strings.NewReader("<math><mi a=y a=/>x</mi></math>"))
+	if err != nil {
+		t.Fatalf("unexpected failure: %v", err)
+	}
+	var b bytes.Buffer
+	if err := Render(&b, doc); err != nil {
+		t.Fatalf("render failure: %v", err)
+	}
+	if got, want := b.String(), `<mi a="y">x</mi>`; !strings.Contains(got, want) {
+		t.Errorf("got %q, want it to contain %q", got, want)
+	}
+}

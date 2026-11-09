@@ -626,6 +626,21 @@ var tokenTests = []tokenTest{
 		`<p a=/>`,
 		`<p a="/">`,
 	},
+	{
+		"duplicate attributes",
+		`<p foo="bar" foo="baz">`,
+		`<p foo="bar">`,
+	},
+	{
+		"duplicate attributes, different case",
+		`<p FOO="bar" foo="baz">`,
+		`<p foo="bar">`,
+	},
+	{
+		"duplicate attributes, self-closing guard",
+		`<p a=x a=/>`,
+		`<p a="x">`,
+	},
 }
 
 func TestTokenizer(t *testing.T) {
@@ -933,3 +948,63 @@ func benchmarkTokenizer(b *testing.B, level int) {
 func BenchmarkRawLevelTokenizer(b *testing.B)  { benchmarkTokenizer(b, rawLevel) }
 func BenchmarkLowLevelTokenizer(b *testing.B)  { benchmarkTokenizer(b, lowLevel) }
 func BenchmarkHighLevelTokenizer(b *testing.B) { benchmarkTokenizer(b, highLevel) }
+
+func TestUnicodeAttributeCase(t *testing.T) {
+	// <div a="1" A="1"> is resolved to <div a="1"> because a and A are considered
+	// duplicate attribute names. Different unicode cases are not considered equal
+	// though, so <div ä="1" Ä="1"> is tokenized as <div ä="1" Ä="1">.
+	f := `<div ä="1" Ä="1">`
+	z := NewTokenizer(strings.NewReader(f))
+	if tt := z.Next(); tt != StartTagToken {
+		t.Fatalf("expected StartTagToken, got %s", tt)
+	}
+	tok := z.Token()
+	if len(tok.Attr) != 2 {
+		t.Fatalf("expected 2 attributes, got %d", len(tok.Attr))
+	}
+	if tok.Attr[0].Key != "ä" {
+		t.Errorf("expected attribute key to be 'ä', got %s", tok.Attr[0].Key)
+	}
+	if tok.Attr[1].Key != "Ä" {
+		t.Errorf("expected attribute key to be 'Ä', got %s", tok.Attr[1].Key)
+	}
+}
+
+func TestDuplicateAttrSelfClosing(t *testing.T) {
+	// A dropped duplicate attribute whose unquoted value ends in a solidus must
+	// not turn the tag into a self-closing tag (see CVE-2025-22872).
+	for _, f := range []string{`<p a=x a=/>`, `<p a=x A=/>`, `<p a="x" a=/>`} {
+		z := NewTokenizer(strings.NewReader(f))
+		if tt := z.Next(); tt != StartTagToken {
+			t.Errorf("%s: expected StartTagToken, got %s", f, tt)
+			continue
+		}
+		tok := z.Token()
+		if len(tok.Attr) != 1 || tok.Attr[0].Key != "a" || tok.Attr[0].Val != "x" {
+			t.Errorf("%s: expected a single a=\"x\" attribute, got %v", f, tok.Attr)
+		}
+	}
+	// A genuine self-closing tag after a duplicate attribute is still recognized.
+	z := NewTokenizer(strings.NewReader(`<p a=x a=y />`))
+	if tt := z.Next(); tt != SelfClosingTagToken {
+		t.Errorf("expected SelfClosingTagToken, got %s", tt)
+	}
+}
+
+func TestSelfClosingAfterBufferShift(t *testing.T) {
+	// The input is split so that the tokenizer's buffer is compacted after the
+	// last attribute value has been read but before the trailing "/>". The
+	// self-closing check must still compare against the shifted offsets.
+	for _, tc := range [][2]string{
+		{`xy<p a="y"`, `/>`},
+		{`xy<p a=x a="y"`, `/>`},
+	} {
+		z := NewTokenizer(io.MultiReader(strings.NewReader(tc[0]), strings.NewReader(tc[1])))
+		if tt := z.Next(); tt != TextToken {
+			t.Fatalf("%s%s: expected TextToken, got %s", tc[0], tc[1], tt)
+		}
+		if tt := z.Next(); tt != SelfClosingTagToken {
+			t.Errorf("%s%s: expected SelfClosingTagToken, got %s", tc[0], tc[1], tt)
+		}
+	}
+}
