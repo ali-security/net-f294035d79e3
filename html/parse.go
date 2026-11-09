@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	a "golang.org/x/net/html/atom"
@@ -328,6 +329,53 @@ func (p *parser) addText(text string) {
 	})
 }
 
+// attrCompare returns -1, 0 or +1 depending on whether a sorts before, equal
+// to or after b, ordering by Namespace, then Key, then Val.
+//
+// attrCompare, sortAttributes and attrEqual are hand-written equivalents of
+// cmp.Or/cmp.Compare, slices.SortFunc and slices.Equal, since this package
+// still supports Go versions that predate the cmp and slices packages.
+func attrCompare(a, b Attribute) int {
+	if a.Namespace != b.Namespace {
+		if a.Namespace < b.Namespace {
+			return -1
+		}
+		return 1
+	}
+	if a.Key != b.Key {
+		if a.Key < b.Key {
+			return -1
+		}
+		return 1
+	}
+	if a.Val != b.Val {
+		if a.Val < b.Val {
+			return -1
+		}
+		return 1
+	}
+	return 0
+}
+
+// sortAttributes sorts attr in place using attrCompare.
+func sortAttributes(attr []Attribute) {
+	sort.Slice(attr, func(i, j int) bool { return attrCompare(attr[i], attr[j]) < 0 })
+}
+
+// attrEqual reports whether the two attribute slices have the same length and
+// pairwise identical elements.
+func attrEqual(x, y []Attribute) bool {
+	if len(x) != len(y) {
+		return false
+	}
+	for i := range x {
+		if x[i] != y[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // addElement adds a child element based on the current token.
 func (p *parser) addElement() {
 	p.addChild(&Node{
@@ -342,6 +390,10 @@ func (p *parser) addElement() {
 func (p *parser) addFormattingElement() {
 	tagAtom, attr := p.tok.DataAtom, p.tok.Attr
 	p.addElement()
+
+	// In order to optimize the search, we need the attributes to be sorted, so we
+	// can just use attrEqual.
+	sortAttributes(attr)
 
 	// Implement the Noah's Ark clause, but with three per family instead of two.
 	identicalElements := 0
@@ -360,19 +412,7 @@ findIdenticalElements:
 		if n.DataAtom != tagAtom {
 			continue
 		}
-		if len(n.Attr) != len(attr) {
-			continue
-		}
-	compareAttributes:
-		for _, t0 := range n.Attr {
-			for _, t1 := range attr {
-				if t0.Key == t1.Key && t0.Namespace == t1.Namespace && t0.Val == t1.Val {
-					// Found a match for this attribute, continue with the next attribute.
-					continue compareAttributes
-				}
-			}
-			// If we get here, there is no attribute that matches a.
-			// Therefore the element is not identical to the new one.
+		if !attrEqual(n.Attr, attr) {
 			continue findIdenticalElements
 		}
 
@@ -382,7 +422,11 @@ findIdenticalElements:
 		}
 	}
 
-	p.afe = append(p.afe, p.top())
+	// Sort the attributes to optimize future identical-element searches.
+	top := p.top()
+	sortAttributes(top.Attr)
+
+	p.afe = append(p.afe, top)
 }
 
 // Section 12.2.4.3.
